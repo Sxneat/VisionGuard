@@ -1,0 +1,7 @@
+.venv/
+*.mp4
+.DS_Store
+*.pt
+extracted_frames/
+Sample 2/
+
