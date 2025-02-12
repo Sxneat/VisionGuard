@@ -53,10 +53,13 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
 
         if results and results[0].boxes:
             for det in results[0].boxes:
+                track_id = (
+                    int(det.id[0].item()) if det.id is not None else -1
+                )  # Tracking ID
                 x1, y1, x2, y2 = map(int, det.xyxy[0].tolist())  # Bounding box
-                bounding_boxes.append([x1, y1, x2, y2])  # Append coordinates to the list
+                bounding_boxes.append([x1, y1, x2, y2,track_id])  # Append coordinates to the list
 
-        find_overlapping_boxes(bounding_boxes)
+        overlapped = find_overlapping_boxes(bounding_boxes)
 
         # Extract detections (boxes, class IDs, confidences, and tracking IDs)
         if results and results[0].boxes:
@@ -67,13 +70,21 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
                 track_id = (
                     int(det.id[0].item()) if det.id is not None else -1
                 )  # Tracking ID
+                
+                x1, y1, x2, y2 = map(int, det.xyxy[0].tolist())  # Bounding box
+                bounding_boxes.append([x1, y1, x2, y2,track_id])  # Append coordinates to the list
 
                 # Define colors
                 color = (0, 255, 0)  # Green bounding box
-                text_color = (255, 255, 255)  # White text
+                text_color = (0, 0, 255)  # White text
 
-                # Draw bounding box
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                if track_id in overlapped:
+                    color = (0, 0, 255)  # Red for overlapping boxes
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                else:
+                    color = (0, 255, 0)  # Green for normal boxes
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
 
                 # Display class, confidence, and tracking ID
                 label = f"ID: {track_id} | Conf: {conf:.2f}"
@@ -82,9 +93,9 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
                     label,
                     (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    1,
                     text_color,
-                    2,
+                    3,
                 )
 
         # Display the frame with bounding boxes
@@ -97,42 +108,78 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
     cap.release()
     cv2.destroyAllWindows()
 
-def calculate_iou(box1, box2):
-    """Calculate the Intersection over Union (IoU) of two bounding boxes."""
-    x1_1, y1_1, x2_1, y2_1 = box1
-    x1_2, y1_2, x2_2, y2_2 = box2
+# def calculate_iou(box1, box2):
+#     """Calculate the Intersection over Union (IoU) of two bounding boxes."""
+#     x1_1, y1_1, x2_1, y2_1 = box1[:4]
+#     x1_2, y1_2, x2_2, y2_2 = box2[:4]
 
-    # Compute intersection coordinates
-    xi1 = max(x1_1, x1_2)
-    yi1 = max(y1_1, y1_2)
-    xi2 = min(x2_1, x2_2)
-    yi2 = min(y2_1, y2_2)
+#     # Compute intersection coordinates
+#     xi1 = max(x1_1, x1_2)
+#     yi1 = max(y1_1, y1_2)
+#     xi2 = min(x2_1, x2_2)
+#     yi2 = min(y2_1, y2_2)
 
-    # Compute width and height of intersection
-    inter_width = max(0, xi2 - xi1)
-    inter_height = max(0, yi2 - yi1)
+#     # Compute width and height of intersection
+#     inter_width = max(0, xi2 - xi1)
+#     inter_height = max(0, yi2 - yi1)
 
-    # Compute intersection and union areas
-    intersection = inter_width * inter_height
-    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-    union = area1 + area2 - intersection
+#     # Compute intersection and union areas
+#     intersection = inter_width * inter_height
+#     area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+#     area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+#     union = area1 + area2 - intersection
 
-    # Compute IoU
-    if union == 0:
-        return 0  # Avoid division by zero
-    return intersection / union
+#     # Compute IoU
+#     if union == 0:
+#         return 0  # Avoid division by zero
+#     return intersection / union
 
-def find_overlapping_boxes(bounding_boxes, iou_threshold=0.5):
-    """Find and print overlapping bounding boxes based on IoU threshold."""
+def calculate_coverage(box_a, box_b):
+    """Calculate the coverage of box_a covered by box_b."""
+    x1_a, y1_a, x2_a, y2_a = box_a  # Box A coordinates
+    x1_b, y1_b, x2_b, y2_b = box_b  # Box B coordinates
+
+    # Calculate intersection coordinates
+    x_left = max(x1_a, x1_b)
+    y_top = max(y1_a, y1_b)
+    x_right = min(x2_a, x2_b)
+    y_bottom = min(y2_a, y2_b)
+
+    # Compute intersection area
+    if x_right <= x_left or y_bottom <= y_top:
+        return 0  # No overlap
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+    # Compute area of Box A
+    area_a = (x2_a - x1_a) * (y2_a - y1_a)
+
+    return intersection_area / area_a  # Coverage percentage
+
+def find_overlapping_boxes(bounding_boxes, coverage_threshold=0.5):
+    """Find and store overlapping bounding boxes based on IoU threshold, ensuring each combination is captured in both directions."""
     num_boxes = len(bounding_boxes)
+    overlapped_boxes = []
 
     for i in range(num_boxes):  # Loop through each box
-        for j in range(i + 1, num_boxes):  # Compare it with all later boxes
-            iou = calculate_iou(bounding_boxes[i], bounding_boxes[j])
+        for j in range(num_boxes):  # Compare with all boxes including earlier ones
+            if i != j:  # Avoid self-comparison
+                one_id = bounding_boxes[i][4]
+                two_id = bounding_boxes[j][4]
+                coverage = calculate_coverage(bounding_boxes[i][:4], bounding_boxes[j][:4])
+                if coverage > coverage_threshold:  # If IoU is above threshold, they overlap
+                    # Add both (i, j) and (j, i) to the list
+                    overlapped_boxes.append(one_id)  # Store the pair (i, j)
+                    overlapped_boxes.append(two_id)  # Store the reverse pair (j, i)
+                    
+                    print(f"Box {one_id} overlaps with Box {two_id} (coverage: {coverage:.2f})")
 
-            if iou > iou_threshold:  # If IoU is above threshold, they overlap
-                print(f"Box {i + 1} overlaps with Box {j + 1} (IoU: {iou:.2f})")
+    return list(set(overlapped_boxes))
+            
+    # for i in range(num_boxes):  # Loop through each box
+    #     for j in range(num_boxes):  # Compare with all boxes including earlier ones
+    #         if i != j:  # Avoid self-comparison
+
 
 
 track_realtime_with_opencv("./best.pt", "20250207_151803.mp4")
