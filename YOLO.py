@@ -1,8 +1,28 @@
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import os
 import torch
 from ultralytics import YOLO
 import roboflow
 import cv2
+import numpy as np
+from torchvision import transforms as T
+from PIL import Image
+
+# Load MiDaS model
+midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small").eval()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+midas.to(device)
+
+# Define MiDaS image transformation
+midas_transform = T.Compose(
+    [
+        T.Resize((384, 384)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.5], std=[0.5]),  # MiDaS expects normalized inputs
+    ]
+)
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,6 +52,7 @@ def track_with_deepsort(model_path: str, video_path: str, output_path: str = "./
     results = model.track(source=video_path, tracker="bytetrack.yaml", save=True)
     print(f"Tracking complete. Output saved at {output_path}")
     return results
+
 def track_realtime_with_opencv(model_path: str, video_path: str):
     """Run YOLOv8 + DeepSORT for object tracking with real-time display using OpenCV."""
     model = YOLO(model_path)  # Load trained YOLOv8 model
@@ -62,16 +83,41 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
         overlapped = find_overlapping_boxes(bounding_boxes)
 
         # Extract detections (boxes, class IDs, confidences, and tracking IDs)
+
+        # Convert frame to RGB and preprocess for MiDaS
+        img_resized = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_resized)  # Convert NumPy array to PIL Image
+        img_tensor = midas_transform(img_pil).unsqueeze(0).to(device)
+
+        # Estimate depth
+        with torch.no_grad():
+            depth_map = midas(img_tensor).squeeze().cpu().numpy()
+
+        # Normalize depth map
+        depth_map = (depth_map - depth_map.min()) / (
+            depth_map.max() - depth_map.min() + 1e-6
+        )
+
+        # Resize depth map to match frame size
+        depth_resized = cv2.resize(depth_map, (frame.shape[1], frame.shape[0]))
+
+        # Apply heatmap
+        depth_colored = apply_colormap(depth_resized)
+
+        # Overlay heatmap on the original frame
+        frame = cv2.addWeighted(frame, 0.6, depth_colored, 0.4, 0)
+        print(depth_resized)
+
         if results and results[0].boxes:
             for det in results[0].boxes:
                 x1, y1, x2, y2 = map(int, det.xyxy[0].tolist())  # Bounding box
                 conf = det.conf[0].item()  # Confidence score
+                lowest_point = lowest_distance(depth_resized,(x1,y1,x2,y2))
                 cls = int(det.cls[0].item())  # Class ID
                 track_id = (
                     int(det.id[0].item()) if det.id is not None else -1
                 )  # Tracking ID
                 
-                x1, y1, x2, y2 = map(int, det.xyxy[0].tolist())  # Bounding box
                 bounding_boxes.append([x1, y1, x2, y2,track_id])  # Append coordinates to the list
 
                 # Define colors
@@ -85,9 +131,8 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
                     color = (0, 255, 0)  # Green for normal boxes
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-
                 # Display class, confidence, and tracking ID
-                label = f"ID: {track_id} | Conf: {conf:.2f}"
+                label = f"ID: {track_id} | Conf: {conf:.2f} | Dist: {lowest_point:.3f}"
                 cv2.putText(
                     frame,
                     label,
@@ -98,8 +143,12 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
                     3,
                 )
 
-        # Display the frame with bounding boxes
-        cv2.imshow("YOLOv8 + DeepSORT Tracking", frame)
+        # Press 'q' to exit the loop
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+        # Display the frame with bounding boxes/show processes frame
+        cv2.imshow("YOLOv8 + DeepSORT Tracking + Real-time Video Depth Heatmap", frame,)
 
         # Press 'q' to exit
         if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -176,14 +225,28 @@ def find_overlapping_boxes(bounding_boxes, coverage_threshold=0.5):
 
     return list(set(overlapped_boxes))
             
-    # for i in range(num_boxes):  # Loop through each box
-    #     for j in range(num_boxes):  # Compare with all boxes including earlier ones
-    #         if i != j:  # Avoid self-comparison
 
+def apply_colormap(depth_map):
+    """Apply a heatmap color mapping to the depth map."""
+    depth_colored = cv2.applyColorMap(
+        (depth_map * 255).astype(np.uint8), cv2.COLORMAP_JET
+    )
+    return depth_colored
 
+def lowest_distance(depth,bounding_box):
+    x1,y1,x2,y2 = bounding_box
+    depth = depth[y1:y2]
+    cropped = []
+
+    for frame in depth:
+        crop = frame[x1:x2]
+        cropped.extend(crop)
+
+    lowest_point = max(cropped)
+    return lowest_point
 
 track_realtime_with_opencv("./best.pt", "20250207_151803.mp4")
 
-
+# process_video_realtime("20250207_151803.mp4")
 # Example: Track objects in a video
 # track_with_deepsort("./best.pt", "20250207_151803.mp4")
