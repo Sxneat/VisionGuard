@@ -10,6 +10,7 @@ import numpy as np
 from torchvision import transforms as T
 from PIL import Image
 
+
 # Load MiDaS model
 midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small").eval()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -157,6 +158,7 @@ def track_realtime_with_opencv(model_path: str, video_path: str):
     cap.release()
     cv2.destroyAllWindows()
 
+# iou below (un-used)
 # def calculate_iou(box1, box2):
 #     """Calculate the Intersection over Union (IoU) of two bounding boxes."""
 #     x1_1, y1_1, x2_1, y2_1 = box1[:4]
@@ -245,7 +247,8 @@ def lowest_distance(depth,bounding_box):
     lowest_point = max(cropped)
     return lowest_point
 
-track_realtime_with_opencv("./best.pt", "20250207_151803.mp4")
+track_realtime_with_opencv("./best.pt", "./already_used_data/20250207_144433.mp4")
+print("done")
 
 # process_video_realtime("20250207_151803.mp4")
 # Example: Track objects in a video
